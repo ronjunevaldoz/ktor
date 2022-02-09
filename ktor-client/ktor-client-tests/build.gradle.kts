@@ -2,10 +2,6 @@
 * Copyright 2014-2021 JetBrains s.r.o and contributors. Use of this source code is governed by the Apache 2.0 license.
 */
 
-import org.jetbrains.kotlin.gradle.plugin.*
-import java.io.*
-import java.net.*
-
 description = "Common tests for client"
 
 val junit_version: String by project.extra
@@ -13,41 +9,13 @@ val kotlin_version: String by project.extra
 val logback_version: String by project.extra
 val serialization_version: String by project.extra
 val coroutines_version: String by project
+val native_targets_enabled: Boolean by rootProject.extra
 
 plugins {
     id("kotlinx-serialization")
 }
 
-open class KtorTestServer : DefaultTask() {
-    @Internal
-    var server: Closeable? = null
-        private set
-
-    @Internal
-    lateinit var main: String
-
-    @Internal
-    lateinit var classpath: FileCollection
-
-    @TaskAction
-    fun exec() {
-        try {
-            println("[TestServer] start")
-            val urlClassLoaderSource = classpath.map { file -> file.toURI().toURL() }.toTypedArray()
-            val loader = URLClassLoader(urlClassLoaderSource, ClassLoader.getSystemClassLoader())
-
-            val mainClass = loader.loadClass(main)
-            val main = mainClass.getMethod("startServer")
-            server = main.invoke(null) as Closeable
-            println("[TestServer] started")
-        } catch (cause: Throwable) {
-            println("[TestServer] failed: ${cause.message}")
-            cause.printStackTrace()
-        }
-    }
-}
-
-val osName = System.getProperty("os.name")
+useJdkVersionForJvmTests(11)
 
 kotlin.sourceSets {
     commonMain {
@@ -111,100 +79,53 @@ kotlin.sourceSets {
         }
     }
 
-    if (rootProject.ext.get("native_targets_enabled") as Boolean) {
-        listOf("linuxX64Test", "mingwX64Test", "macosX64Test").map { getByName(it) }.forEach {
-            it.dependencies {
-                api(project(":ktor-client:ktor-client-curl"))
-            }
+    if (!native_targets_enabled) return@sourceSets
+    listOf("linuxX64Test", "mingwX64Test", "macosX64Test").map { getByName(it) }.forEach {
+        it.dependencies {
+            api(project(":ktor-client:ktor-client-curl"))
         }
+    }
 
-        if (!osName.startsWith("Windows")) {
-            listOf("linuxX64Test", "macosX64Test", "iosX64Test").map { getByName(it) }.forEach {
-                it.dependencies {
-                    api(project(":ktor-client:ktor-client-cio"))
-                }
-            }
+    listOf("linuxX64Test", "macosX64Test", "iosX64Test").map { getByName(it) }.forEach {
+        it.dependencies {
+            api(project(":ktor-client:ktor-client-cio"))
         }
-        listOf("iosX64Test", "macosX64Test", "macosArm64Test").map { getByName(it) }.forEach {
-            it.dependencies {
-                api(project(":ktor-client:ktor-client-darwin"))
-            }
+    }
+
+    listOf("iosX64Test", "macosX64Test", "macosArm64Test").map { getByName(it) }.forEach {
+        it.dependencies {
+            api(project(":ktor-client:ktor-client-darwin"))
         }
     }
 }
 
-val startTestServer = task<KtorTestServer>("startTestServer") {
-    dependsOn(tasks["jvmJar"])
+val testServerService = project.gradle.sharedServices.registerIfAbsent("TestServer", TestServer::class.java) {
+    with(parameters) {
+        main.set("io.ktor.client.tests.utils.TestServerKt")
+        val kotlinCompilation = kotlin.targets.getByName("jvm")
+            .compilations["test"] as org.jetbrains.kotlin.gradle.plugin.KotlinCompilationToRunnableFiles<*>
 
-    main = "io.ktor.client.tests.utils.TestServerKt"
-    val kotlinCompilation = kotlin.targets.getByName("jvm").compilations["test"]
-    classpath = (kotlinCompilation as KotlinCompilationToRunnableFiles<*>).runtimeDependencyFiles
+        classpath.set(kotlinCompilation.runtimeDependencyFiles)
+    }
 }
 
-val testTasks = mutableListOf(
+val testTasks = listOf(
     "jvmTest",
 
-    // 1.4.x JS tasks
     "jsLegacyNodeTest",
     "jsIrNodeTest",
     "jsLegacyBrowserTest",
     "jsIrBrowserTest",
 
     "posixTest",
-    "darwinTest"
-)
-
-testTasks += listOf(
+    "darwinTest",
     "macosX64Test",
     "macosArm64Test",
     "linuxX64Test",
     "iosX64Test",
     "mingwX64Test"
-)
+).mapNotNull { tasks.findByName(it) }
 
-rootProject.allprojects {
-    if (!path.contains("ktor-client") || path.contains("ktor-shared")) {
-        return@allprojects
-    }
-    val tasks = tasks.matching { it.name in testTasks }
-    configure(tasks) {
-        dependsOn(startTestServer)
-        kotlin.sourceSets {
-
-            if (!(rootProject.ext.get("native_targets_enabled") as Boolean)) {
-                return@sourceSets
-            }
-            if (name in listOf("macosX64Test", "linuxX64Test")) {
-                getByName(name) {
-                    dependencies {
-                        api(project(":ktor-client:ktor-client-curl"))
-                        api(project(":ktor-client:ktor-client-cio"))
-                    }
-                }
-            }
-            if (name == "iosX64Test") {
-                getByName(name) {
-                    dependencies {
-                        api(project(":ktor-client:ktor-client-cio"))
-                    }
-                }
-            }
-            if (name == "mingwX64Test") {
-                getByName(name) {
-                    dependencies {
-                        api(project(":ktor-client:ktor-client-curl"))
-                    }
-                }
-            }
-        }
-    }
-}
-
-useJdkVersionForJvmTests(11)
-
-gradle.buildFinished {
-    if (startTestServer.server != null) {
-        startTestServer.server?.close()
-        println("[TestServer] stop")
-    }
+configure(testTasks) {
+    usesService(testServerService)
 }
