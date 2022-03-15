@@ -1,6 +1,6 @@
 /*
-* Copyright 2014-2021 JetBrains s.r.o and contributors. Use of this source code is governed by the Apache 2.0 license.
-*/
+ * Copyright 2014-2022 JetBrains s.r.o and contributors. Use of this source code is governed by the Apache 2.0 license.
+ */
 
 package io.ktor.server.routing
 
@@ -8,52 +8,6 @@ import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.plugins.*
 import io.ktor.server.request.*
-
-/**
- * Represents a result of routing resolution.
- *
- * @property route specifies a routing node for successful resolution, or nearest one for failed.
- */
-public sealed class RoutingResolveResult(public val route: Route) {
-    /**
-     * Provides all captured values for this result.
-     */
-    public abstract val parameters: Parameters
-
-    /**
-     * Represents a successful result
-     */
-    public class Success internal constructor(
-        route: Route,
-        override val parameters: Parameters,
-        internal val quality: Double
-    ) : RoutingResolveResult(route) {
-
-        @Deprecated("This will become internal in future releases.")
-        public constructor(route: Route, parameters: Parameters) : this(route, parameters, 0.0)
-
-        override fun toString(): String = "SUCCESS${if (parameters.isEmpty()) "" else "; $parameters"} @ $route"
-    }
-
-    /**
-     * Represents a failed result
-     * @param reason provides information on reason of a failure
-     */
-    public class Failure internal constructor(
-        route: Route,
-        public val reason: String,
-        public val errorStatusCode: HttpStatusCode
-    ) : RoutingResolveResult(route) {
-
-        @Deprecated("This will become internal in future releases.")
-        public constructor(route: Route, reason: String) : this(route, reason, HttpStatusCode.NotFound)
-
-        override val parameters: Nothing
-            get() = throw UnsupportedOperationException("Parameters are available only when routing resolve succeeds")
-
-        override fun toString(): String = "FAILURE \"$reason\" @ $route"
-    }
-}
 
 /**
  * Represents a context in which routing resolution is being performed
@@ -65,7 +19,6 @@ public class RoutingResolveContext(
     public val call: ApplicationCall,
     private val tracers: List<(RoutingResolveTrace) -> Unit>
 ) {
-
     /**
      * List of path segments parsed out of a [call]
      */
@@ -222,32 +175,7 @@ public class RoutingResolveContext(
                 failedEvaluation?.failureStatusCode ?: HttpStatusCode.NotFound
             )
         }
-        val bestPath = successResults
-            .maxWithOrNull { result1, result2 ->
-                var index1 = 0
-                var index2 = 0
-                while (index1 < result1.size && index2 < result2.size) {
-                    val quality1 = result1[index1].quality
-                    val quality2 = result2[index2].quality
-                    if (quality1 == RouteSelectorEvaluation.qualityTransparent) {
-                        index1++
-                        continue
-                    }
-                    if (quality2 == RouteSelectorEvaluation.qualityTransparent) {
-                        index2++
-                        continue
-                    }
-                    if (quality1 != quality2) {
-                        return@maxWithOrNull compareValues(quality1, quality2)
-                    }
-                    index1++
-                    index2++
-                }
-                compareValues(
-                    result1.count { it.quality != RouteSelectorEvaluation.qualityTransparent },
-                    result2.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
-                )
-            }!!
+        val bestPath = successResults.reduce { current, next -> maxResolveResult(current, next) }
 
         val parameters = bestPath
             .fold(ParametersBuilder()) { builder, result -> builder.apply { appendAll(result.parameters) } }
@@ -262,6 +190,36 @@ public class RoutingResolveContext(
                 }
             }
         )
+    }
+
+    private fun maxResolveResult(
+        first: List<RoutingResolveResult.Success>,
+        second: List<RoutingResolveResult.Success>
+    ): List<RoutingResolveResult.Success> {
+        var index1 = 0
+        var index2 = 0
+        while (index1 < first.size && index2 < second.size) {
+            val quality1 = first[index1].quality
+            val quality2 = second[index2].quality
+            if (quality1 == RouteSelectorEvaluation.qualityTransparent) {
+                index1++
+                continue
+            }
+            if (quality2 == RouteSelectorEvaluation.qualityTransparent) {
+                index2++
+                continue
+            }
+            if (quality1 != quality2) {
+                return if (compareValues(quality1, quality2) < 0) second else first
+            }
+            index1++
+            index2++
+        }
+
+        return if (compareValues(
+            first.count { it.quality != RouteSelectorEvaluation.qualityTransparent },
+            second.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
+        ) < 0) second else first
     }
 
     private fun max(
