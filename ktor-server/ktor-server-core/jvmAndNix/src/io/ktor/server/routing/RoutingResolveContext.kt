@@ -31,6 +31,8 @@ public class RoutingResolveContext(
 
     private val trace: RoutingResolveTrace?
 
+    private var resolveResult: List<RoutingResolveResult.Success>? = null
+
     init {
         try {
             segments = parse(call.request.path())
@@ -79,22 +81,17 @@ public class RoutingResolveContext(
             return result
         }
         check(rootEvaluation is RouteSelectorEvaluation.Success)
-        val successResults = mutableListOf<List<RoutingResolveResult.Success>>()
-
         val rootResolveResult = RoutingResolveResult.Success(root, rootEvaluation.parameters, rootEvaluation.quality)
         val rootTrait = listOf(rootResolveResult)
 
         trace?.begin(root, 0)
         val failedEvaluation = resolveStep(
             root,
-            successResults,
             rootTrait,
             rootEvaluation.segmentIncrement
         )
         trace?.finish(root, 0, rootResolveResult)
-
-        trace?.registerSuccessResults(successResults)
-        val resolveResult = findBestRoute(root, successResults, failedEvaluation)
+        val resolveResult = findBestRoute(root, failedEvaluation)
         trace?.registerFinalResult(resolveResult)
 
         trace?.apply { tracers.forEach { it(this) } }
@@ -103,7 +100,6 @@ public class RoutingResolveContext(
 
     private fun resolveStep(
         entry: Route,
-        successResults: MutableList<List<RoutingResolveResult.Success>>,
         trait: List<RoutingResolveResult.Success>,
         segmentIndex: Int
     ): RouteSelectorEvaluation.Failure? {
@@ -119,7 +115,8 @@ public class RoutingResolveContext(
             return RouteSelectorEvaluation.FailedPath
         }
         if (entry.handlers.isNotEmpty() && segmentIndex == segments.size) {
-            successResults.add(trait)
+            val currentResult = resolveResult
+            resolveResult = if (currentResult != null) maxResolveResult(trait, currentResult) else trait
             failedEvaluation = null
         }
 
@@ -151,7 +148,7 @@ public class RoutingResolveContext(
             val result = RoutingResolveResult.Success(child, childEvaluation.parameters, childEvaluation.quality)
             val newIndex = segmentIndex + childEvaluation.segmentIncrement
             trace?.begin(child, newIndex)
-            val failedSubtreeEvaluation = resolveStep(child, successResults, trait + result, newIndex)
+            val failedSubtreeEvaluation = resolveStep(child, trait + result, newIndex)
             trace?.finish(child, newIndex, result)
 
             if (failedSubtreeEvaluation == null && bestSucceedChildQuality < childEvaluation.quality) {
@@ -165,17 +162,13 @@ public class RoutingResolveContext(
 
     private fun findBestRoute(
         root: Route,
-        successResults: List<List<RoutingResolveResult.Success>>,
         failedEvaluation: RouteSelectorEvaluation.Failure?
     ): RoutingResolveResult {
-        if (successResults.isEmpty()) {
-            return RoutingResolveResult.Failure(
-                root,
-                "No matched subtrees found",
-                failedEvaluation?.failureStatusCode ?: HttpStatusCode.NotFound
-            )
-        }
-        val bestPath = successResults.reduce { current, next -> maxResolveResult(current, next) }
+        val bestPath = resolveResult ?: return RoutingResolveResult.Failure(
+            root,
+            "No matched subtrees found",
+            failedEvaluation?.failureStatusCode ?: HttpStatusCode.NotFound
+        )
 
         val parameters = bestPath
             .fold(ParametersBuilder()) { builder, result -> builder.apply { appendAll(result.parameters) } }
@@ -205,21 +198,23 @@ public class RoutingResolveContext(
                 index1++
                 continue
             }
+
             if (quality2 == RouteSelectorEvaluation.qualityTransparent) {
                 index2++
                 continue
             }
+
             if (quality1 != quality2) {
-                return if (compareValues(quality1, quality2) < 0) second else first
+                return if (quality1 < quality2) second else first
             }
+
             index1++
             index2++
         }
 
-        return if (compareValues(
-            first.count { it.quality != RouteSelectorEvaluation.qualityTransparent },
-            second.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
-        ) < 0) second else first
+        val firstQuality = first.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
+        val secondQuality = second.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
+        return if (firstQuality < secondQuality) second else first
     }
 
     private fun max(
