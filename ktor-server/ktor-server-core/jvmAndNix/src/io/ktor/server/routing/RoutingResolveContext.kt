@@ -33,6 +33,8 @@ public class RoutingResolveContext(
 
     private var resolveResult: List<RoutingResolveResult.Success>? = null
 
+    private var failedEvaluation: RouteSelectorEvaluation.Failure? = RouteSelectorEvaluation.FailedPath
+
     init {
         try {
             segments = parse(call.request.path())
@@ -73,25 +75,10 @@ public class RoutingResolveContext(
      * Executes resolution procedure in this context and returns [RoutingResolveResult]
      */
     public fun resolve(): RoutingResolveResult {
-        val root = routing
-        val rootEvaluation = root.selector.evaluate(this, 0)
-        if (rootEvaluation is RouteSelectorEvaluation.Failure) {
-            val result = RoutingResolveResult.Failure(root, "rootPath didn't match", rootEvaluation.failureStatusCode)
-            trace?.skip(root, 0, result)
-            return result
-        }
-        check(rootEvaluation is RouteSelectorEvaluation.Success)
-        val rootResolveResult = RoutingResolveResult.Success(root, rootEvaluation.parameters, rootEvaluation.quality)
-        val rootTrait = listOf(rootResolveResult)
 
-        trace?.begin(root, 0)
-        val failedEvaluation = resolveStep(
-            root,
-            rootTrait,
-            rootEvaluation.segmentIncrement
-        )
-        trace?.finish(root, 0, rootResolveResult)
-        val resolveResult = findBestRoute(root, failedEvaluation)
+        handleRoute(routing, 0, listOf())
+
+        val resolveResult = findBestRoute()
         trace?.registerFinalResult(resolveResult)
 
         trace?.apply { tracers.forEach { it(this) } }
@@ -102,18 +89,17 @@ public class RoutingResolveContext(
         entry: Route,
         trait: List<RoutingResolveResult.Success>,
         segmentIndex: Int
-    ): RouteSelectorEvaluation.Failure? {
-        var failedEvaluation: RouteSelectorEvaluation.Failure? = RouteSelectorEvaluation.FailedPath
-        var bestSucceedChildQuality: Double = -Double.MAX_VALUE
-
+    ) {
         if (entry.children.isEmpty() && segmentIndex != segments.size) {
             trace?.skip(
                 entry,
                 segmentIndex,
                 RoutingResolveResult.Failure(entry, "Not all segments matched", HttpStatusCode.NotFound)
             )
-            return RouteSelectorEvaluation.FailedPath
+
+            return
         }
+
         if (entry.handlers.isNotEmpty() && segmentIndex == segments.size) {
             val currentResult = resolveResult
             resolveResult = if (currentResult != null) maxResolveResult(trait, currentResult) else trait
@@ -123,49 +109,36 @@ public class RoutingResolveContext(
         // iterate using indices to avoid creating iterator
         for (childIndex in 0..entry.children.lastIndex) {
             val child = entry.children[childIndex]
-            val childEvaluation = child.selector.evaluate(this, segmentIndex)
-            if (childEvaluation is RouteSelectorEvaluation.Failure) {
-                trace?.skip(
-                    child,
-                    segmentIndex,
-                    RoutingResolveResult.Failure(child, "Selector didn't match", childEvaluation.failureStatusCode)
-                )
-                failedEvaluation = max(failedEvaluation, childEvaluation)
-                continue // selector didn't match, skip entire subtree
-            }
-            check(childEvaluation is RouteSelectorEvaluation.Success)
-            if (childEvaluation.quality != RouteSelectorEvaluation.qualityTransparent &&
-                childEvaluation.quality < bestSucceedChildQuality
-            ) {
-                trace?.skip(
-                    child,
-                    segmentIndex,
-                    RoutingResolveResult.Failure(child, "Better match was already found", HttpStatusCode.NotFound)
-                )
-                continue
-            }
-
-            val result = RoutingResolveResult.Success(child, childEvaluation.parameters, childEvaluation.quality)
-            val newIndex = segmentIndex + childEvaluation.segmentIncrement
-            trace?.begin(child, newIndex)
-            val failedSubtreeEvaluation = resolveStep(child, trait + result, newIndex)
-            trace?.finish(child, newIndex, result)
-
-            if (failedSubtreeEvaluation == null && bestSucceedChildQuality < childEvaluation.quality) {
-                bestSucceedChildQuality = childEvaluation.quality
-            }
-
-            failedEvaluation = max(failedEvaluation, failedSubtreeEvaluation)
+            handleRoute(child, segmentIndex, trait)
         }
-        return failedEvaluation
     }
 
-    private fun findBestRoute(
-        root: Route,
-        failedEvaluation: RouteSelectorEvaluation.Failure?
-    ): RoutingResolveResult {
+    private fun handleRoute(child: Route, segmentIndex: Int, trait: List<RoutingResolveResult.Success>) {
+        val childEvaluation = child.selector.evaluate(this, segmentIndex)
+        if (childEvaluation is RouteSelectorEvaluation.Failure) {
+            trace?.skip(
+                child,
+                segmentIndex,
+                RoutingResolveResult.Failure(child, "Selector didn't match", childEvaluation.failureStatusCode)
+            )
+            failedEvaluation = max(failedEvaluation, childEvaluation)
+            return
+        }
+
+        check(childEvaluation is RouteSelectorEvaluation.Success)
+
+        val result = RoutingResolveResult.Success(child, childEvaluation.parameters, childEvaluation.quality)
+        val newIndex = segmentIndex + childEvaluation.segmentIncrement
+        trace?.begin(child, newIndex)
+
+        resolveStep(child, trait + result, newIndex)
+
+        trace?.finish(child, newIndex, result)
+    }
+
+    private fun findBestRoute(): RoutingResolveResult {
         val bestPath = resolveResult ?: return RoutingResolveResult.Failure(
-            root,
+            routing,
             "No matched subtrees found",
             failedEvaluation?.failureStatusCode ?: HttpStatusCode.NotFound
         )
@@ -173,6 +146,7 @@ public class RoutingResolveContext(
         val parameters = bestPath
             .fold(ParametersBuilder()) { builder, result -> builder.apply { appendAll(result.parameters) } }
             .build()
+
         return RoutingResolveResult.Success(
             bestPath.last().route,
             parameters,
