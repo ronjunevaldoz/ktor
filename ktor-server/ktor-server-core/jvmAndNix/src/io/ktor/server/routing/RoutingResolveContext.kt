@@ -75,7 +75,7 @@ public class RoutingResolveContext(
      * Executes resolution procedure in this context and returns [RoutingResolveResult]
      */
     public fun resolve(): RoutingResolveResult {
-        handleRoute(routing, 0, mutableListOf())
+        handleRoute(routing, 0, ArrayList())
 
         val resolveResult = findBestRoute()
         trace?.registerFinalResult(resolveResult)
@@ -84,7 +84,7 @@ public class RoutingResolveContext(
         return resolveResult
     }
 
-    private fun handleRoute(entry: Route, segmentIndex: Int, trait: MutableList<RoutingResolveResult.Success>) {
+    private fun handleRoute(entry: Route, segmentIndex: Int, trait: ArrayList<RoutingResolveResult.Success>) {
         val childEvaluation = entry.selector.evaluate(this, segmentIndex)
 
         if (childEvaluation is RouteSelectorEvaluation.Failure) {
@@ -128,7 +128,7 @@ public class RoutingResolveContext(
             handleRoute(child, newIndex, trait)
         }
 
-        trait.dropLast(1)
+        trait.removeLast()
 
         trace?.finish(entry, newIndex, result)
     }
