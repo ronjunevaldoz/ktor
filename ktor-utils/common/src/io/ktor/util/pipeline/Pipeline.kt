@@ -13,7 +13,7 @@ import kotlinx.atomicfu.*
 import kotlin.coroutines.*
 
 internal typealias PipelineInterceptorFunction<TSubject, TContext> =
-    (PipelineContext<TSubject, TContext>, TSubject, Continuation<Unit>) -> Any?
+        (PipelineContext<TSubject, TContext>, TSubject, Continuation<Unit>) -> Any?
 
 /**
  * Represents an execution pipeline for asynchronous extensible computations
@@ -237,6 +237,16 @@ public open class Pipeline<TSubject : Any, TContext : Any>(
         mergeInterceptors(from)
     }
 
+    /**
+     * Reset current pipeline from other.
+     */
+    public fun resetFrom(from: Pipeline<TSubject, TContext>) {
+        phasesRaw.clear()
+        check(interceptorsQuantity == 0)
+
+        fastPathMerge(from)
+    }
+
     internal fun phaseInterceptors(phase: PipelinePhase): List<PipelineInterceptorFunction<TSubject, TContext>> =
         findPhase(phase)?.sharedInterceptors() ?: emptyList()
 
@@ -442,10 +452,13 @@ public open class Pipeline<TSubject : Any, TContext : Any>(
         when {
             fromPhaseRelation is PipelinePhaseRelation.Last ->
                 addPhase(fromPhase)
+
             fromPhaseRelation is PipelinePhaseRelation.Before && hasPhase(fromPhaseRelation.relativeTo) ->
                 insertPhaseBefore(fromPhaseRelation.relativeTo, fromPhase)
+
             fromPhaseRelation is PipelinePhaseRelation.After ->
                 insertPhaseAfter(fromPhaseRelation.relativeTo, fromPhase)
+
             else -> return false
         }
         return true

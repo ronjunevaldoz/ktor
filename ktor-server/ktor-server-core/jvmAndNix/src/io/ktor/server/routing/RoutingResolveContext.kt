@@ -9,6 +9,8 @@ import io.ktor.server.application.*
 import io.ktor.server.plugins.*
 import io.ktor.server.request.*
 
+private const val ROUTING_DEFAULT_CAPACITY = 16
+
 /**
  * Represents a context in which routing resolution is being performed
  * @param routing root node for resolution to start at
@@ -31,7 +33,7 @@ public class RoutingResolveContext(
 
     private val trace: RoutingResolveTrace?
 
-    private var resolveResult: List<RoutingResolveResult.Success>? = null
+    private val resolveResult: ArrayList<RoutingResolveResult.Success> = ArrayList(ROUTING_DEFAULT_CAPACITY)
 
     private var failedEvaluation: RouteSelectorEvaluation.Failure? = RouteSelectorEvaluation.FailedPath
 
@@ -45,7 +47,7 @@ public class RoutingResolveContext(
     }
 
     private fun parse(path: String): List<String> {
-        if (path.isEmpty() || path == "/") return listOf()
+        if (path.isEmpty() || path == "/") return emptyList()
         val length = path.length
         var beginSegment = 0
         var nextSegment = 0
@@ -78,8 +80,8 @@ public class RoutingResolveContext(
         handleRoute(routing, 0, ArrayList())
 
         val resolveResult = findBestRoute()
-        trace?.registerFinalResult(resolveResult)
 
+        trace?.registerFinalResult(resolveResult)
         trace?.apply { tracers.forEach { it(this) } }
         return resolveResult
     }
@@ -115,10 +117,10 @@ public class RoutingResolveContext(
 
         trait.add(result)
 
-        if (entry.handlers.isNotEmpty() && newIndex == segments.size) {
-            val currentResult = resolveResult
-            val newResult = MutableList(trait.size) { trait[it] }
-            resolveResult = if (currentResult != null) maxResolveResult(newResult, currentResult) else newResult
+        val hasHandlers = entry.handlers.isNotEmpty()
+        if (hasHandlers && newIndex == segments.size && (resolveResult.isEmpty() || isBetterResolve(trait))) {
+            resolveResult.clear()
+            resolveResult.addAll(trait)
             failedEvaluation = null
         }
 
@@ -134,37 +136,41 @@ public class RoutingResolveContext(
     }
 
     private fun findBestRoute(): RoutingResolveResult {
-        val bestPath = resolveResult ?: return RoutingResolveResult.Failure(
-            routing,
-            "No matched subtrees found",
-            failedEvaluation?.failureStatusCode ?: HttpStatusCode.NotFound
-        )
+        val finalResolve = resolveResult
 
-        val parameters = bestPath
-            .fold(ParametersBuilder()) { builder, result -> builder.apply { appendAll(result.parameters) } }
-            .build()
+        if (finalResolve.isEmpty()) {
+            return RoutingResolveResult.Failure(
+                routing,
+                "No matched subtrees found",
+                failedEvaluation?.failureStatusCode ?: HttpStatusCode.NotFound
+            )
+        }
 
-        return RoutingResolveResult.Success(
-            bestPath.last().route,
-            parameters,
-            bestPath.minOf { result ->
-                when (result.quality) {
-                    RouteSelectorEvaluation.qualityTransparent -> RouteSelectorEvaluation.qualityConstant
-                    else -> result.quality
-                }
-            }
-        )
+        val parameters = ParametersBuilder()
+        var quality = Double.MAX_VALUE
+
+        for (index in 0 .. finalResolve.lastIndex) {
+            val part = finalResolve[index]
+            parameters.appendAll(part.parameters)
+
+            val partQuality = if (part.quality == RouteSelectorEvaluation.qualityTransparent) {
+                RouteSelectorEvaluation.qualityConstant
+            } else part.quality
+
+            quality = minOf(quality, partQuality)
+        }
+
+        return RoutingResolveResult.Success(finalResolve.last().route, parameters.build(), quality)
     }
 
-    private fun maxResolveResult(
-        first: List<RoutingResolveResult.Success>,
-        second: List<RoutingResolveResult.Success>
-    ): List<RoutingResolveResult.Success> {
+    private fun isBetterResolve(new: List<RoutingResolveResult.Success>): Boolean {
         var index1 = 0
         var index2 = 0
-        while (index1 < first.size && index2 < second.size) {
-            val quality1 = first[index1].quality
-            val quality2 = second[index2].quality
+        val currentResolve = resolveResult
+
+        while (index1 < currentResolve.size && index2 < new.size) {
+            val quality1 = currentResolve[index1].quality
+            val quality2 = new[index2].quality
             if (quality1 == RouteSelectorEvaluation.qualityTransparent) {
                 index1++
                 continue
@@ -176,16 +182,16 @@ public class RoutingResolveContext(
             }
 
             if (quality1 != quality2) {
-                return if (quality1 < quality2) second else first
+                return quality2 > quality1
             }
 
             index1++
             index2++
         }
 
-        val firstQuality = first.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
-        val secondQuality = second.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
-        return if (firstQuality < secondQuality) second else first
+        val firstQuality = currentResolve.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
+        val secondQuality = new.count { it.quality != RouteSelectorEvaluation.qualityTransparent }
+        return secondQuality > firstQuality
     }
 
     private fun max(

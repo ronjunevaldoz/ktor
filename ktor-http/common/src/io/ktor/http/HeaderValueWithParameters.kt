@@ -26,21 +26,31 @@ public abstract class HeaderValueWithParameters(
     /**
      * The first value for the parameter with [name] comparing case-insensitively or `null` if no such parameters found
      */
-    public fun parameter(name: String): String? =
-        parameters.firstOrNull { it.name.equals(name, ignoreCase = true) }?.value
+    public fun parameter(name: String): String? {
+        for (index in 0 .. parameters.lastIndex) {
+            val parameter = parameters[index]
+
+            if (parameter.name.equals(name, ignoreCase = true)) {
+                return parameter.value
+            }
+        }
+
+        return null
+    }
 
     override fun toString(): String = when {
         parameters.isEmpty() -> content
         else -> {
             val size = content.length + parameters.sumOf { it.name.length + it.value.length + 3 }
+
             StringBuilder(size).apply {
                 append(content)
-                for (element in parameters) {
-                    val (name, value) = element
+                for (index in 0 .. parameters.lastIndex) {
+                    val element = parameters[index]
                     append("; ")
-                    append(name)
+                    append(element.name)
                     append("=")
-                    value.escapeIfNeededTo(this)
+                    element.value.escapeIfNeededTo(this)
                 }
             }.toString()
         }
