@@ -75,7 +75,6 @@ public class RoutingResolveContext(
      * Executes resolution procedure in this context and returns [RoutingResolveResult]
      */
     public fun resolve(): RoutingResolveResult {
-
         handleRoute(routing, 0, listOf())
 
         val resolveResult = findBestRoute()
@@ -85,41 +84,14 @@ public class RoutingResolveContext(
         return resolveResult
     }
 
-    private fun resolveStep(
-        entry: Route,
-        trait: List<RoutingResolveResult.Success>,
-        segmentIndex: Int
-    ) {
-        if (entry.children.isEmpty() && segmentIndex != segments.size) {
+    private fun handleRoute(entry: Route, segmentIndex: Int, trait: List<RoutingResolveResult.Success>) {
+        val childEvaluation = entry.selector.evaluate(this, segmentIndex)
+
+        if (childEvaluation is RouteSelectorEvaluation.Failure) {
             trace?.skip(
                 entry,
                 segmentIndex,
-                RoutingResolveResult.Failure(entry, "Not all segments matched", HttpStatusCode.NotFound)
-            )
-
-            return
-        }
-
-        if (entry.handlers.isNotEmpty() && segmentIndex == segments.size) {
-            val currentResult = resolveResult
-            resolveResult = if (currentResult != null) maxResolveResult(trait, currentResult) else trait
-            failedEvaluation = null
-        }
-
-        // iterate using indices to avoid creating iterator
-        for (childIndex in 0..entry.children.lastIndex) {
-            val child = entry.children[childIndex]
-            handleRoute(child, segmentIndex, trait)
-        }
-    }
-
-    private fun handleRoute(child: Route, segmentIndex: Int, trait: List<RoutingResolveResult.Success>) {
-        val childEvaluation = child.selector.evaluate(this, segmentIndex)
-        if (childEvaluation is RouteSelectorEvaluation.Failure) {
-            trace?.skip(
-                child,
-                segmentIndex,
-                RoutingResolveResult.Failure(child, "Selector didn't match", childEvaluation.failureStatusCode)
+                RoutingResolveResult.Failure(entry, "Selector didn't match", childEvaluation.failureStatusCode)
             )
             failedEvaluation = max(failedEvaluation, childEvaluation)
             return
@@ -127,13 +99,36 @@ public class RoutingResolveContext(
 
         check(childEvaluation is RouteSelectorEvaluation.Success)
 
-        val result = RoutingResolveResult.Success(child, childEvaluation.parameters, childEvaluation.quality)
+        val result = RoutingResolveResult.Success(entry, childEvaluation.parameters, childEvaluation.quality)
         val newIndex = segmentIndex + childEvaluation.segmentIncrement
-        trace?.begin(child, newIndex)
+        trace?.begin(entry, newIndex)
 
-        resolveStep(child, trait + result, newIndex)
+        if (entry.children.isEmpty() && newIndex != segments.size) {
+            trace?.skip(
+                entry,
+                newIndex,
+                RoutingResolveResult.Failure(entry, "Not all segments matched", HttpStatusCode.NotFound)
+            )
 
-        trace?.finish(child, newIndex, result)
+            return
+        }
+
+        val newTrait = trait + result
+
+        if (entry.handlers.isNotEmpty() && newIndex == segments.size) {
+            val currentResult = resolveResult
+            resolveResult = if (currentResult != null) maxResolveResult(newTrait, currentResult) else newTrait
+            failedEvaluation = null
+        }
+
+
+        // iterate using indices to avoid creating iterator
+        for (childIndex in 0..entry.children.lastIndex) {
+            val child = entry.children[childIndex]
+            handleRoute(child, newIndex, newTrait)
+        }
+
+        trace?.finish(entry, newIndex, result)
     }
 
     private fun findBestRoute(): RoutingResolveResult {
