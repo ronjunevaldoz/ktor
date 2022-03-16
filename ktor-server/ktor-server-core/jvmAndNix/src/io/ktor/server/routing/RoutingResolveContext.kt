@@ -75,7 +75,7 @@ public class RoutingResolveContext(
      * Executes resolution procedure in this context and returns [RoutingResolveResult]
      */
     public fun resolve(): RoutingResolveResult {
-        handleRoute(routing, 0, listOf())
+        handleRoute(routing, 0, mutableListOf())
 
         val resolveResult = findBestRoute()
         trace?.registerFinalResult(resolveResult)
@@ -84,7 +84,7 @@ public class RoutingResolveContext(
         return resolveResult
     }
 
-    private fun handleRoute(entry: Route, segmentIndex: Int, trait: List<RoutingResolveResult.Success>) {
+    private fun handleRoute(entry: Route, segmentIndex: Int, trait: MutableList<RoutingResolveResult.Success>) {
         val childEvaluation = entry.selector.evaluate(this, segmentIndex)
 
         if (childEvaluation is RouteSelectorEvaluation.Failure) {
@@ -113,20 +113,22 @@ public class RoutingResolveContext(
             return
         }
 
-        val newTrait = trait + result
+        trait.add(result)
 
         if (entry.handlers.isNotEmpty() && newIndex == segments.size) {
             val currentResult = resolveResult
-            resolveResult = if (currentResult != null) maxResolveResult(newTrait, currentResult) else newTrait
+            val newResult = MutableList(trait.size) { trait[it] }
+            resolveResult = if (currentResult != null) maxResolveResult(newResult, currentResult) else newResult
             failedEvaluation = null
         }
-
 
         // iterate using indices to avoid creating iterator
         for (childIndex in 0..entry.children.lastIndex) {
             val child = entry.children[childIndex]
-            handleRoute(child, newIndex, newTrait)
+            handleRoute(child, newIndex, trait)
         }
+
+        trait.dropLast(1)
 
         trace?.finish(entry, newIndex, result)
     }
