@@ -149,7 +149,7 @@ public class RoutingResolveContext(
         val parameters = ParametersBuilder()
         var quality = Double.MAX_VALUE
 
-        for (index in 0 .. finalResolve.lastIndex) {
+        for (index in 0..finalResolve.lastIndex) {
             val part = finalResolve[index]
             parameters.appendAll(part.parameters)
 
